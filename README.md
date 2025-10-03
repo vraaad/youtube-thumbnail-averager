@@ -1,5 +1,3 @@
-
-
 > If you're using my code, all i ask is that u subscribe to my channel! :> youtube.com/emnersonn
   also hi code ppl if anything here is stupid or makes like no sense please yell at me on twitter, i have never put anything on github before so i follor a tutorial... don't yell at me for my bad code though i already know that it sucks.
 
