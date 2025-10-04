@@ -13,8 +13,4 @@ Requirements for those who don't feel like looking at the req file
 
 How to use
 > 1. Go to a youtube thumbnail grabber website (i use YTlarge) and get the id of the channel you wanna blend. the id is the part that starts with UC.
-<<<<<<< HEAD
 > 2. Run the script i guess
-=======
-> 2. Run the script i guess
->>>>>>> 3f90fff95fc8dace6d72bb7453f4d82570864247
