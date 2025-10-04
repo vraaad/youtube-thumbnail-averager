@@ -14,6 +14,8 @@ from yt_dlp import YoutubeDL
 
 from image_util import average_blend, median_blend, geometric_mean_blend, overlay_blend, max_blend, min_blend, crop_black_bars, resize_images
 
+# huge thank you to eden for the insane amount of help, and thank you to all other contributers for bringing your ideas to the table.
+
 # wait time in between channels to avoid yt rate limit (kinda redundant so u can keep it at 0)
 SLEEP_TIME = 0
 
