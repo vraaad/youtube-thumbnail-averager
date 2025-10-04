@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import yt_dlp
 from PIL import Image
 import numpy as np
@@ -9,7 +11,15 @@ import sys
 import shutil
 
 # channel ids go here with UU instead of UC and you can set the max videos you want it to download by putting a number after the comma.
-IDS_AND_MAX_VIDEOS = [("UUKqH_9mk1waLgBiL2vT5b9g", 3000),("UU4rqhyiTs7XyuODcECvuiiQ", 3000)]
+# argv[0] is the script name, so skip it
+args = sys.argv[1:]
+
+# make sure we have an even number of arguments
+if len(args) % 2 != 0:
+    raise ValueError("Arguments must be in id amount pairs")
+
+# convert to list of tuples
+IDS_AND_MAX_VIDEOS = [(args[i], int(args[i+1])) for i in range(0, len(args), 2)]
 
 # wait time in between channels to avoid yt rate limit (kinda redundant so u can keep it at 0)
 SLEEP_TIME = 0
