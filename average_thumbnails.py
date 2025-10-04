@@ -1,31 +1,146 @@
-#!/usr/bin/env python3
-
 import argparse
-import yt_dlp
-from PIL import Image
+import re
+import sys
+import textwrap
+import time
+from gettext import gettext as _
+from io import BytesIO
+from pathlib import Path
+
 import numpy as np
 import requests
-from io import BytesIO
-import os
-import time
-import sys
-import shutil
+from PIL import Image
+from yt_dlp import YoutubeDL
 
-# channel ids go here with UU instead of UC and you can set the max videos you want it to download by putting a number after the comma.
-#! DISREGARD! Use arguments to input the channels or use `--old` to use this!
-IDS_AND_MAX_VIDEOS = [("UUKqH_9mk1waLgBiL2vT5b9g", 3000),("UU4rqhyiTs7XyuODcECvuiiQ", 3000)]
+from image_util import average_blend, median_blend, geometric_mean_blend, overlay_blend, max_blend, min_blend, crop_black_bars, resize_images
+
+# huge thank you to eden for the insane amount of help, and thank you to all other contributers for bringing your ideas to the table.
 
 # wait time in between channels to avoid yt rate limit (kinda redundant so u can keep it at 0)
 SLEEP_TIME = 0
-"""
-# sort by video length
-LONGEST_SHORT = 180
-SHORTEST_LIVE = 4800
-"""
-THUMBNAIL_SIZE = (1280, 720)
 
-def zleep_animation(total_seconds):
-    zframes = ["𝗓   ", "  z  ", "    z","     ","     "]
+ANIMATION_FRAME_DURATION = 0.2
+
+CHANNEL_REGEX = re.compile(r'^(?:https?://)?(?:www\.|m\.)?youtube\.com(?:/c)?/([^/]+)(?:/videos)?$')
+
+
+def download_playlist_video_ids(playlist_url: str, max_videos: int, yt_dlp_opts: dict):
+    yt_dlp_opts = yt_dlp_opts | {
+        'extract_flat': True,
+        # format for playlist_items is `[start]:[stop][:stride]`, where `[:stride]` is optional and if included also needs a colon in front of it
+        'playlist_items': f'0:{max_videos * 2}',  # overshoot so that hopefully we get enough videos we don't filter out
+    }
+
+    with YoutubeDL(yt_dlp_opts) as ydl:
+        try:
+            info = ydl.extract_info(playlist_url, download=False)
+            entries = info.get('entries', [])
+            return [e['id'] for e in entries if 'id' in e][:max_videos * 2]
+        except Exception as e:
+            print(f'(╥‸╥) video list extraction failed.')
+            print(e)
+            return []
+
+
+def download_video_thumbnails(video_ids: list[str], max_videos: int, thumbnail_folder: Path, yt_dlp_opts: dict) -> list[Image.Image]:
+    thumbnails: list[Image.Image] = []
+
+    with YoutubeDL(yt_dlp_opts) as ydl:
+        for video_id in video_ids:
+            if len(thumbnails) >= max_videos:
+                break
+
+            try:
+                thumbnail_path = thumbnail_folder / f'{video_id}.png'
+
+                if thumbnail_path.exists():
+                    try:
+                        thumbnail_image = Image.open(thumbnail_path)
+                        thumbnails.append(thumbnail_image)
+                        print(f"  ✔  [{len(thumbnails)}/{max_videos}] {video_id} (already downloaded)")
+                        continue
+                    except Exception as e:
+                        print(f'(╥‸╥) failed to open image from file {thumbnail_path}, falling back to download: {e}')
+
+                video = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+
+                width = video.get("width")
+                height = video.get("height")
+                aspect_ratio = width / height if width and height else None
+
+                def print_skip_reason(reason: str):
+                    print(f"  ✘  skipped {reason} {video['title']}")
+
+                if aspect_ratio is not None and aspect_ratio < 1:
+                    print_skip_reason("for being a short!! (ew)")
+                    continue
+                elif video.get("is_live", False) or video.get("was_live", False):
+                    print_skip_reason("for being a livestream!!")
+                    continue
+
+                thumbs = video.get('thumbnails')
+                thumbs.sort(key=lambda thumb: thumb.get('preference', -9999), reverse=True)
+
+                thumbnail_image = try_download_thumbnails(thumbs, video_id)
+
+                if thumbnail_image is None:
+                    print(f"(╥‸╥) skipping video, could not download thumbnail </3 id:{video_id}")
+                    continue
+
+                thumbnails.append(thumbnail_image)
+                thumbnail_image.save(thumbnail_path)
+
+                print(f"  ✔  [{len(thumbnails)}/{max_videos}] {video['title']}")
+            except Exception as e:
+                print(f"(╥‸╥) skipping video and pausing for 500 seconds </3 id:{video_id}")
+                print(e)
+                # time.sleep(500)
+
+    print(" ")
+
+    return thumbnails
+
+
+url_templates = [
+    'https://img.youtube.com/vi_webp/%s/maxresdefault.webp',
+    'https://img.youtube.com/vi/%s/maxresdefault.jpg',
+    'https://img.youtube.com/vi/%s/hqdefault.jpg',
+]
+
+
+def try_download_thumbnails(thumbnails: list[dict[str, object]], video_id: str) -> Image.Image | None:
+    for thumbnail in thumbnails[:8]:  # only try first 8 thumbnails
+        # noinspection PyTypeChecker
+        thumbnail_url: str | None = thumbnail.get('url', None)
+
+        if thumbnail_url is None:
+            continue
+
+        img = try_download_thumbnail(thumbnail_url)
+
+        if img is not None:
+            return img
+
+    print(f"(╥‸╥) failed to download thumbnail for video {video_id}")
+    return None
+
+
+def try_download_thumbnail(url: str) -> Image.Image | None:
+    response = requests.get(url)
+    if response.status_code == 200:
+        img = Image.open(BytesIO(response.content)).convert('RGB')
+
+        w, h = img.size
+        if w / h < 1.6:
+            img = crop_black_bars(img)
+
+        return img
+
+    return None
+
+
+def zleep_animation(total_seconds: int):
+    zframes = ["𝗓   ", "  z  ", "    z", "     ", "     "]
     frame_idx = 0
     start = time.time()
 
@@ -34,256 +149,244 @@ def zleep_animation(total_seconds):
         elapsed = time.time() - start
         if elapsed >= total_seconds:
             break
-        zframe = zframes[frame_idx]
-        zmessage = f"\r{zbase_text} {zframe}    "
-        sys.stdout.write(zmessage)
+        sys.stdout.write(f"\r{zbase_text} {zframes[frame_idx]}    ")
         sys.stdout.flush()
         frame_idx = (frame_idx + 1) % len(zframes)
-        time.sleep(.4)
+        time.sleep(ANIMATION_FRAME_DURATION)
 
     sys.stdout.write('\r' + ' ' * 69 + '\r')
     sys.stdout.flush()
     print()
 
-def start_animation():
-    sframes = ["OᴗO","OᴗO","OᴗO",">ᴗ<","OᴗO",">ᴗ<","OᴗO","OᴗO","OᴗO",">ᴗ<",]
+
+HEADER_ANIMATION_FRAMES = ["OᴗO", "OᴗO", "OᴗO", ">ᴗ<", "OᴗO", ">ᴗ<", "OᴗO", "OᴗO", "OᴗO", ">ᴗ<"]
+
+
+def print_starting_message():
+    print()
+
     frame_idx = 0
     start = time.time()
-
-    sbase_text_one = "  ✦︎  starting script "
-    sbase_text_two = "  ✦︎"
     while True:
         elapsed = time.time() - start
-        if elapsed >= 3:
+        if elapsed > 3:
             break
-        sframe = sframes[frame_idx]
-        smessage = f"\r{sbase_text_one}{sframe}{sbase_text_two}    "
-        sys.stdout.write(smessage)
+        sys.stdout.write(f"\r  ✦︎  starting script {HEADER_ANIMATION_FRAMES[frame_idx]}  ✦︎")
         sys.stdout.flush()
-        frame_idx = (frame_idx + 1) % len(sframes)
-        time.sleep(.25)
+        frame_idx = (frame_idx + 1) % len(HEADER_ANIMATION_FRAMES)
+        time.sleep(ANIMATION_FRAME_DURATION)
 
-def crop_black_bars(img, black_threshold=30, consecutive_rows=3):
-    arr = np.array(img.convert('L'))
-    h, w = arr.shape
+    print("\n")
+    print("˗ˏˋ SUBSCRIBE TO EMNERSON ˎˊ˗")
+    print("\n")
 
-    def is_black_row(row):
-        return np.mean(row) < black_threshold
 
-    top, bottom = 0, h
-    for i in range(h):
-        if all(is_black_row(arr[j]) for j in range(i, min(i + consecutive_rows, h))):
-            top = i + consecutive_rows
-        else:
-            break
-    for i in range(h - 1, -1, -1):
-        if all(is_black_row(arr[j]) for j in range(max(0, i - consecutive_rows + 1), i + 1)):
-            bottom = i - consecutive_rows + 1
-        else:
-            break
+class CustomHelpFormatter(argparse.MetavarTypeHelpFormatter):
+    def _split_lines(self, text: str, width: int):
+        """
+        modified from argparse.RawTextHelpFormatter, but also dedents the string
+        """
+        splitlines = [textwrap.wrap(line, width) for line in text.splitlines()]
+        return np.concatenate(splitlines).tolist()  # flatten list
 
-    left, right = 0, w
-    for i in range(w):
-        if all(is_black_row(arr[:, j]) for j in range(i, min(i + consecutive_rows, w))):
-            left = i + consecutive_rows
-        else:
-            break
-    for i in range(w - 1, -1, -1):
-        if all(is_black_row(arr[:, j]) for j in range(max(0, i - consecutive_rows + 1), i + 1)):
-            right = i - consecutive_rows + 1
-        else:
-            break
+    def _get_help_string(self, action: argparse.Action):
+        """
+        modified from argparse.ArgumentDefaultsHelpFormatter, but puts the default on a new line
+        """
+        # help = inspect.cleandoc(action.help.strip())
+        help = textwrap.dedent(action.help).strip()
+        print(f'cleaned:\n{help}')
+        if help is None:
+            help = ''
 
-    if top >= bottom or left >= right:
-        return img
-    return img.crop((left, top, right, bottom))
+        if '%(default)' not in help:
+            if action.default is not argparse.SUPPRESS:
+                defaulting_nargs = [argparse.OPTIONAL, argparse.ZERO_OR_MORE]
+                if action.option_strings or action.nargs in defaulting_nargs:
+                    help = help + _('\n(default: %(default)s)')
+        return help
 
-def get_video_ids(playlist_url, max_videos):
-    ydl_opts_flat = {'quiet': True, 'extract_flat': True, 'force_generic_extractor': True}
-
-    print(" ")
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_flat) as ydl:
-            info = ydl.extract_info(playlist_url, download=False)
-            entries = info.get('entries', [])
-            flat_ids = [e['id'] for e in entries if 'id' in e][:max_videos * 2]
-    except Exception as e:
-        print(f"(╥‸╥) video list extraction failed. {e}")
-        return []
-
-    ydl_opts_rich = {'quiet': True}
-    filtered_ids, success_count = [], 0
-    with yt_dlp.YoutubeDL(ydl_opts_rich) as ydl:
-        for vid_id in flat_ids:
-            try:
-                video = ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False)
-
-                width = video.get("width")
-                height = video.get("height")
-                aspect_ratio = round(width / height, 4) if width and height else None
-
-                is_live = video.get("is_live", False)
-                was_live = video.get("was_live", False)
-
-                # duration = video.get("duration", 0)
-
-                if aspect_ratio >= 1 and is_live == False and was_live == False:
-                    filtered_ids.append(vid_id)
-                    success_count += 1
-                    print(f"  ✔  [{success_count}/{max_videos}] {video['title']}")
-                else:
-                    reason = "for being a short!! (ew)" if aspect_ratio <= 1 else \
-                             "for being a current livestream!!" if is_live == True else \
-                             "for being a past livestream!!" if was_live == True else \
-                             "for.. uhh... i have no idea why actually"
-                    
-                    print(f"  ✘  skipped {reason} {video['title']}")
-                """
-                if LONGEST_SHORT <= duration <= SHORTEST_LIVE:
-                    filtered_ids.append(vid_id)
-                    success_count += 1
-                    print(f"  ✔  [{duration}s] [{success_count}/{max_videos}] {video['title']}")
-                else:
-                    reason = "for being too short!!" if duration < LONGEST_SHORT else "for being too long!!"
-                    print(f"  ✘  skipped {reason} [{duration}s] {video['title']}")
-                """
-                time.sleep(5)
-                if len(filtered_ids) >= max_videos:
-                    break
-            except Exception:
-                print(f"(╥‸╥) skipping video and pausing for 500 seconds </3 id:{vid_id}")
-                time.sleep(500)
-    print(" ")
-
-    return filtered_ids
-
-def download_thumbnail(video_id):
-    urls = [
-        f'https://img.youtube.com/vi/{video_id}/maxresdefault.jpg',
-        f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg',
-    ]
-    for url in urls:
-        response = requests.get(url)
-        if response.status_code == 200:
-            try:
-                img = Image.open(BytesIO(response.content)).convert('RGB')
-                w, h = img.size
-                if w / h < 1.6:
-                    img = crop_black_bars(img)
-                img = img.resize(THUMBNAIL_SIZE)
-                time.sleep(0.5)
-                return img
-            except Exception as e:
-                print(f"(╥‸╥) error resizing video {video_id}: {e}")
-    print(f"(╥‸╥) failed to download thumbnail for video {video_id}")
-    return None
-
-def average_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.float32) for img in thumbnails], axis=0)
-    return Image.fromarray(np.mean(stack, axis=0).astype(np.uint8))
-
-def median_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.uint8) for img in thumbnails], axis=0)
-    return Image.fromarray(np.median(stack, axis=0).astype(np.uint8))
-
-def geometric_mean_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.float32) + 1 for img in thumbnails], axis=0)
-    geo_mean = np.exp(np.mean(np.log(stack), axis=0)) - 1
-    return Image.fromarray(np.clip(geo_mean, 0, 255).astype(np.uint8))
-
-def overlay_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.float32) / 255 for img in thumbnails], axis=0)
-    avg, multiplied = np.mean(stack, axis=0), np.prod(stack, axis=0)
-    mask = avg <= 0.5
-    overlay = np.zeros_like(avg)
-    overlay[mask] = 2 * multiplied[mask] * avg[mask]
-    overlay[~mask] = 1 - 2 * (1 - multiplied[~mask]) * (1 - avg[~mask])
-    return Image.fromarray((overlay * 255).clip(0, 255).astype(np.uint8))
-
-def max_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.uint8) for img in thumbnails], axis=0)
-    return Image.fromarray(np.max(stack, axis=0))
-
-def min_blend(thumbnails):
-    stack = np.stack([np.array(img, dtype=np.uint8) for img in thumbnails], axis=0)
-    return Image.fromarray(np.min(stack, axis=0))
 
 def main():
-    print(" ")
-    print(" ")
-    print(" ")
-    start_animation()
-    print(" ")
-    print("˗ˏˋ SUBSCRIBE TO EMNERSON ˎˊ˗") #! what about me >:(
-    print("\n\n")
-    time.sleep(1)
+    parser = argparse.ArgumentParser(
+        description="""
+        YouTube Thumbnail Averager
+        
+        by emnerson
+        """,
+        epilog='Subscribe to emnerson on youtube: https://www.youtube.com/emnersonn',
+        formatter_class=CustomHelpFormatter
+    )
 
-    playlists_root = "playlists"
-    if os.path.exists(playlists_root):
-        shutil.rmtree(playlists_root)
+    parser.add_argument(
+        '--channels', '-c',
+        help="""
+        The playlists/youtube channels to process (separated by spaces)
+        Can be in any of the following formats:
+        - @channelname
+        - channelname (WARNING: there are issues with it, it is much easier to just include the @)
+        - https://www.youtube.com/@channelname
+        """,
+        required=True,
+        type=str,
+        nargs='+',
+        default=[],
+    )
 
-    for idx, (playlist_id, max_videos) in enumerate(IDS_AND_MAX_VIDEOS, start=1):
-        playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    parser.add_argument(
+        '--playlists', '-p',
+        help='The playlists/youtube channels to process (separated by spaces)',
+        type=str,
+        nargs='+',
+        default=[],
+    )
 
-        time.sleep(1)
+    parser.add_argument(
+        '--cookies',
+        help='The path to the cookie file. This bypasses youtube age restrictions.\n'
+             'See here how to make a cookie file: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies',
+        type=str,
+    )
+
+    parser.add_argument(
+        '--max-videos', '-m',
+        help='The maximum number of videos to process',
+        type=int,
+        default=3000,
+    )
+
+    parser.add_argument(
+        '--thumbnail-resolution', '-r',
+        help='The thumbnail resolution to target, in [width]:[height]',
+        type=str,
+        default='1280:720',
+    )
+
+    parser.add_argument(
+        '--average-blend',
+        help='If an average blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    parser.add_argument(
+        '--median-blend',
+        help='If a median blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    parser.add_argument(
+        '--geometric-mean-blend',
+        help='If a geometric mean blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    parser.add_argument(
+        '--overlay-blend',
+        help='If an overlay blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    parser.add_argument(
+        '--max-blend',
+        help='If a max blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    parser.add_argument(
+        '--min-blend',
+        help='If a min blend of all the thumbnails should be created',
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        choices=[True, False],
+    )
+
+    args = parser.parse_args()
+
+    urls: list[tuple[str, str]] = []
+
+    for channel in args.channels:
+        match = CHANNEL_REGEX.match(channel)
+        if match:
+            channel = match.group(1)
+
+        urls.append((channel, f'https://www.youtube.com/{channel}/videos'))
+
+    for playlist in args.playlists:
+        urls.append((playlist, f'https://www.youtube.com/playlist?list={playlist}'))
+
+    if not urls:
+        parser.error('at least one of the following arguments are required: --channels/-c or --playlists/-p')
+
+    max_videos = args.max_videos
+
+    if max_videos <= 0:
+        parser.error('max videos must be positive')
+
+    yt_dlp_opts = {
+        'quiet': True,
+    }
+
+    if args.cookies:
+        yt_dlp_opts['cookiefile'] = args.cookies
+
+    thumbnail_resolution = args.thumbnail_resolution.split(':')
+    if len(thumbnail_resolution) != 2:
+        parser.error('thumbnail resolution must be in format [width]:[height], for example 1280:720')
+
+    try:
+        thumbnail_resolution = [int(value) for value in thumbnail_resolution]
+    except ValueError:
+        parser.error('thumbnail resolution must be in format [width]:[height], for example 1280:720')
+
+    print_starting_message()
+
+    for idx, (playlist_id, playlist_url) in enumerate(urls):
         print(" ")
-        print(f">> PLAYLIST {idx}/{len(IDS_AND_MAX_VIDEOS)}")
+        print(f">> SOURCE {idx + 1}/{len(urls)}: {playlist_id}")
 
-        video_ids = get_video_ids(playlist_url, max_videos)
-        if not video_ids:
+        playlist_folder = Path(f'playlists/{playlist_id}')
+        thumbnail_folder = playlist_folder / 'thumbnails'
+        thumbnail_folder.mkdir(parents=True, exist_ok=True)
+
+        video_ids = download_playlist_video_ids(playlist_url, max_videos, yt_dlp_opts)
+
+        video_thumbnails = download_video_thumbnails(video_ids, max_videos, thumbnail_folder, yt_dlp_opts)
+
+        if not video_thumbnails:
             print(f"(╥‸╥) skipping {playlist_id}, evil scary error happened.")
             continue
+            
+        video_thumbnails = resize_images(video_thumbnails, thumbnail_resolution)
 
-        playlist_folder = os.path.join("playlists", f"playlist_{idx}")
-        thumbnail_folder = os.path.join(playlist_folder, "thumbnails")
-        os.makedirs(thumbnail_folder, exist_ok=True)
-        thumbnails = []
-
-        for i, vid_id in enumerate(video_ids):
-            print(f"  ↴ downloading thumbnail... {i+1}/{len(video_ids)}")
-            thumb = download_thumbnail(vid_id)
-            if thumb:
-                thumbnails.append(thumb)
-                thumb.save(f"{thumbnail_folder}/thumb_{i+1}.jpg")
-            else:
-                print(f"(╥‸╥) skipping video </3 id:{vid_id}")
-
-        if thumbnails:
-            time.sleep(1)
+        if video_thumbnails:
             print(" ")
-
-            print("  ✩ creating average blend...")
-            average_blend(thumbnails).save(f"{playlist_folder}/average_thumbnail.png")
-
-            print("  ✩ creating median blend...")
-            median_blend(thumbnails).save(f"{playlist_folder}/median_thumbnail.png")
-
-            print("  ✩ creating geometric mean blend...")
-            geometric_mean_blend(thumbnails).save(f"{playlist_folder}/geometric_mean_thumbnail.png")
-
-            print("  ✩ creating overlay blend...")
-            overlay_blend(thumbnails).save(f"{playlist_folder}/overlay_blend_thumbnail.png")
-
-            print("  ✩ creating max blend...")
-            max_blend(thumbnails).save(f"{playlist_folder}/max_thumbnail.png")
-
-            print("  ✩ creating min blend...")
-            min_blend(thumbnails).save(f"{playlist_folder}/min_thumbnail.png")
-
+            generate_blended_thumbnails(args, playlist_folder, video_thumbnails)
             print(" ")
-            print(f"♡ {idx} done!")
+            print(f"♡ {idx + 1} done!")
             print(" ")
         else:
             print(f"(╥‸╥) no thumbnails downloaded for {playlist_id}... smth went wrong D:")
 
-        time.sleep(1)
-
-        if idx < len(IDS_AND_MAX_VIDEOS):
+        if idx <= len(urls):
             zleep_animation(SLEEP_TIME)
 
-        print(" ")
         print("one moment please...")
-        time.sleep(2)
         print(""" 
     ／!、
   （ﾟ､｡ ７
@@ -291,24 +394,33 @@ def main():
     じし_,)ノ
 boneless chicken""")
         print(" ")
-        print(" ")
+
+
+def generate_blended_thumbnails(args, playlist_folder: Path, thumbnails: list[Image.Image]):
+    if args.median_blend:
+        print("  ✩ creating average blend...")
+        average_blend(thumbnails).save(playlist_folder / 'average_thumbnail.png')
+
+    if args.median_blend:
+        print("  ✩ creating median blend...")
+        median_blend(thumbnails).save(playlist_folder / 'median_thumbnail.png')
+
+    if args.geometric_mean_blend:
+        print("  ✩ creating geometric mean blend...")
+        geometric_mean_blend(thumbnails).save(playlist_folder / 'geometric_mean_thumbnail.png')
+
+    if args.overlay_blend:
+        print("  ✩ creating overlay blend...")
+        overlay_blend(thumbnails).save(playlist_folder / 'overlay_blend_thumbnail.png')
+
+    if args.max_blend:
+        print("  ✩ creating max blend...")
+        max_blend(thumbnails).save(playlist_folder / 'max_thumbnail.png')
+
+    if args.min_blend:
+        print("  ✩ creating min blend...")
+        min_blend(thumbnails).save(playlist_folder / 'min_thumbnail.png')
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser("./average_thumbnails.py")
-    parser.epilog = "yt average thumbnail averager by emnerson & contributors <3"
-    parser.add_argument("ids", nargs="*", help="The YouTube channel ID and max video number, with both arguments separated by a colon")
-    parser.add_argument("--old", help="Use the old way of inputting files (via the script file)", action="store_true")
-
-    if len(sys.argv) == 1:
-        parser.print_help()
-        exit()
-
-    args = parser.parse_args()
-
-    if not args.old:
-        if len(args.ids) == 0:
-            print("You forgot the IDs (somehow)! >:(")
-        
-        IDS_AND_MAX_VIDEOS = [["UU" + id[2:], int(max)] for id, max in map(lambda s: s.split(":"), args.ids)] #* hehe i even replace the UC with UU automagically :3c
-
     main()

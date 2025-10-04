@@ -1,7 +1,5 @@
 **if you're using my code, all i ask is that u subscribe to my channel! :> [youtube.com/emnersonn](https://youtube.com/emnersonn)**
 
-also hi code ppl if anything here is stupid or makes like no sense please yell at me on twitter, i have never put anything on github before so i follor a tutorial... don't yell at me for my bad code though i already know that it sucks.
-
 this script downloads thumbnails from YT channels (or playlists if you want) and blends them into one image.
 
 # installation
@@ -10,11 +8,10 @@ create a venv (`python3 -m venv .venv`), go into it and run `pip3 install -r req
 
 # usage
 
-once everything's set up, go to a youtube thumbnail grabber website (i use [YTLarge](https://ytlarge.com)) and get the id of the channel you wanna blend. the id is the part that starts with UC.
+you can run the program by executing `python average_thumbnails.py --max-videos [# of videos you want downloaded] --channel "@[handle]"`.
+for more information, execute `python average_thumbnails.py --help`
 
-you can run the program by executing `python3 average_thumbnails.py [channel_id]:[max_thumbnails]`.
-
-example for [emnerson](https://youtube.com/emnersonn) and 100 thumbnails: `python3 average_thumbnails.py UC11zGVkBKRBp5FX8uaWLqjw:100`
+example for [emnerson](https://youtube.com/emnersonn) and 100 thumbnails: `python average_thumbnails.py --max-videos 100 --channel "@emnersonn"`
 
 # other notes
 
