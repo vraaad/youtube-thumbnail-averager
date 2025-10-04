@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import yt_dlp
 from PIL import Image
 import numpy as np
