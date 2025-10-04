@@ -12,5 +12,4 @@ Requirements for those who don't feel like looking at the req file
 > requests
 
 How to use
-> 1. Go to a youtube thumbnail grabber website (i use YTlarge) and get the id of the channel you wanna blend. the id is the part that starts with UC.
-> 2. Run the script i guess
+> wile i finish fixing this readme, just run python average_thumbnails.py --help
