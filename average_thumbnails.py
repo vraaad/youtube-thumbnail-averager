@@ -117,7 +117,11 @@ def get_video_ids(playlist_url, max_videos):
         print(f"(╥‸╥) video list extraction failed. {e}")
         return []
 
-    ydl_opts_rich = {'quiet': True}
+    ydl_opts_rich = {'quiet': True    
+                     'cookiefile': "youtube.txt",
+    }
+    # replace youtube.txt with the cookie file you've exported, this bypasses errors regarding age restriction. (ex. "C:\\YT-DLP\\cookies.txt")
+    # please consult this page for more details https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies
     filtered_ids, success_count = [], 0
     with yt_dlp.YoutubeDL(ydl_opts_rich) as ydl:
         for vid_id in flat_ids:
