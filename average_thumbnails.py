@@ -397,7 +397,7 @@ boneless chicken""")
 
 
 def generate_blended_thumbnails(args, playlist_folder: Path, thumbnails: list[Image.Image]):
-    if args.median_blend:
+    if args.average_blend:
         print("  ✩ creating average blend...")
         average_blend(thumbnails).save(playlist_folder / 'average_thumbnail.png')
 
